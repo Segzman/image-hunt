@@ -1,10 +1,12 @@
 import json
 import os
 import sys
+import subprocess
 import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 import urllib.error
 import urllib.request
 
@@ -190,6 +192,140 @@ class ModelsTest(unittest.TestCase):
     def test_default_train_hint(self):
         by_id = {m['id']: m for m in hunt.MODELS}
         self.assertEqual(by_id[hunt.DEFAULT_MODEL]['data'], 'train')
+
+
+class HelperAgentTest(unittest.TestCase):
+    def proc(self, stdout='', returncode=0, stderr=''):
+        return type('Proc', (), {'stdout': stdout, 'returncode': returncode,
+                                 'stderr': stderr})()
+
+    def test_sandbox_is_in_user_cache_outside_repo(self):
+        sandbox = os.path.normcase(os.path.abspath(hunt.HELPER_SANDBOX))
+        root = os.path.normcase(os.path.abspath(hunt.ROOT))
+        self.assertEqual(os.path.basename(sandbox), 'helper-sandbox')
+        self.assertNotEqual(os.path.commonpath([root, sandbox]), root)
+        self.assertEqual(sandbox, os.path.normcase(os.path.abspath(os.path.expanduser(
+            '~/.cache/image-hunt/helper-sandbox'))))
+
+    def test_existing_helper_moves_from_old_sandbox_once(self):
+        name = hunt.helper_name(hunt.DEFAULT_MODEL)
+        old = os.path.join(hunt.ROOT, '.helper-sandbox')
+        with tempfile.TemporaryDirectory() as sandbox:
+            listing = {'agents': [{'name': name, 'dir': old}]}
+            calls = []
+
+            def fake(args, timeout=30):
+                calls.append(list(args))
+                if args == ['agents', 'list', '--json']:
+                    return self.proc(json.dumps(listing))
+                if args[:3] == ['agents', 'set', name]:
+                    listing['agents'][0]['dir'] = args[-1]
+                    return self.proc()
+                raise AssertionError(args)
+
+            with mock.patch.object(hunt, 'HELPER_SANDBOX', sandbox), \
+                    mock.patch.object(hunt, '_ag', side_effect=fake):
+                self.assertFalse(hunt._ensure_agent(hunt.DEFAULT_MODEL, name))
+                self.assertFalse(hunt._ensure_agent(hunt.DEFAULT_MODEL, name))
+
+            self.assertEqual(calls.count(['agents', 'set', name, '--dir', sandbox]), 1)
+            self.assertTrue(os.path.isdir(sandbox))
+
+    def test_effort_and_stage_timeouts_are_synced_before_chat(self):
+        name = hunt.helper_name(hunt.DEFAULT_MODEL)
+        with tempfile.TemporaryDirectory() as sandbox:
+            calls = []
+
+            def fake(args, timeout=30):
+                calls.append((list(args), timeout))
+                if args == ['agents', 'list', '--json']:
+                    return self.proc(json.dumps({'agents': [{'name': name, 'dir': sandbox}]}))
+                if args[:2] == ['agents', 'set']:
+                    return self.proc()
+                if args[:2] == ['chat', 'send']:
+                    return self.proc('{"ok":true,"data":{"reply":"ok"}}')
+                raise AssertionError(args)
+
+            models = {'models': [{'id': hunt.DEFAULT_MODEL, 'backend': 'opencode',
+                                  'efforts': ['default', 'low', 'high', 'max']}]}
+            with mock.patch.object(hunt, 'HELPER_SANDBOX', sandbox), \
+                    mock.patch.object(hunt, '_ag', side_effect=fake), \
+                    mock.patch.object(hunt, 'discover_models', return_value=models):
+                self.assertEqual(hunt.ask_helper(hunt.DEFAULT_MODEL, 'default', 'plan',
+                                                 {'stage': 'planning'}), 'ok')
+                self.assertEqual(hunt.ask_helper(hunt.DEFAULT_MODEL, 'max', 'curate',
+                                                 {'stage': 'curating'}), 'ok')
+
+            effort_calls = [args for args, _ in calls if args[:2] == ['agents', 'set']]
+            self.assertEqual(effort_calls, [
+                ['agents', 'set', name, '--effort', 'low'],
+                ['agents', 'set', name, '--effort', 'max'],
+            ])
+            chats = [(args, timeout) for args, timeout in calls if args[:2] == ['chat', 'send']]
+            self.assertEqual([args[args.index('--timeout') + 1] for args, _ in chats],
+                             ['90', '120'])
+            self.assertEqual([timeout for _, timeout in chats], [100, 130])
+            for effort_call, chat in zip(effort_calls, chats):
+                self.assertLess(calls.index((effort_call, 30)), calls.index(chat))
+
+    def test_default_effort_clears_previous_effort_when_low_unavailable(self):
+        name = hunt.helper_name('opencode/space-bunny-free')
+        with tempfile.TemporaryDirectory() as sandbox:
+            calls = []
+
+            def fake(args, timeout=30):
+                calls.append(list(args))
+                if args == ['agents', 'list', '--json']:
+                    return self.proc(json.dumps({'agents': [{'name': name, 'dir': sandbox}]}))
+                if args[:2] == ['agents', 'set']:
+                    return self.proc()
+                if args[:2] == ['chat', 'send']:
+                    return self.proc('{"ok":true,"data":{"reply":"ok"}}')
+                raise AssertionError(args)
+
+            with mock.patch.object(hunt, 'HELPER_SANDBOX', sandbox), \
+                    mock.patch.object(hunt, '_ag', side_effect=fake), \
+                    mock.patch.object(hunt, 'discover_models', return_value={'models': [
+                        {'id': 'opencode/space-bunny-free', 'backend': 'opencode',
+                         'efforts': ['default']}]}):
+                hunt.ask_helper('opencode/space-bunny-free', 'default', 'plan',
+                                {'stage': 'planning'})
+
+            self.assertIn(['agents', 'set', name, '--effort', ''], calls)
+
+    def test_timeout_logs_clear_fallback_message(self):
+        name = hunt.helper_name(hunt.DEFAULT_MODEL)
+        job = {'stage': 'planning', 'log': []}
+
+        def fake(args, timeout=30):
+            if args == ['agents', 'list', '--json']:
+                return self.proc(json.dumps({'agents': [{'name': name,
+                                                         'dir': hunt.HELPER_SANDBOX}]}))
+            if args[:2] == ['agents', 'set']:
+                return self.proc()
+            if args[:2] == ['chat', 'send']:
+                raise subprocess.TimeoutExpired(args, timeout)
+            if args == ['agents', 'rm', name]:
+                return self.proc()
+            raise AssertionError(args)
+
+        with tempfile.TemporaryDirectory() as sandbox:
+            agent_dir = os.path.join(sandbox, '.agent')
+            meta = os.path.join(agent_dir, 'chats', name + '.meta.json')
+            os.makedirs(os.path.dirname(meta))
+            with open(meta, 'w') as f:
+                f.write('{}')
+            with mock.patch.object(hunt, 'HELPER_SANDBOX', sandbox), \
+                    mock.patch.object(hunt, 'AGENT_DIR', agent_dir), \
+                    mock.patch.object(hunt, '_ag', side_effect=fake), \
+                    mock.patch.object(hunt, 'discover_models', return_value={'models': [
+                        {'id': hunt.DEFAULT_MODEL, 'backend': 'opencode',
+                         'efforts': ['default', 'low', 'high', 'max']}]}):
+                self.assertEqual(hunt.ask_helper(hunt.DEFAULT_MODEL, 'default', 'plan', job), '')
+            self.assertFalse(os.path.exists(meta))
+
+        self.assertTrue(any('AI helper timed out after 90s — continuing without AI' in line
+                            for line in job['log']), job['log'])
 
 
 class FakeProc:
@@ -557,5 +693,419 @@ class ChatAgentNamingTest(unittest.TestCase):
             self.assertFalse(hunt.helper_name(mid).startswith('chat-'))
 
 
+def source_spec(**kw):
+    spec = {'name': 'myart', 'label': 'My Art', 'kinds': ['illustration'],
+            'about': 'test source',
+            'url': 'https://api.example.com/search?q={query}&limit={limit}',
+            'items': 'data.items',
+            'fields': {'url': 'u', 'thumb': 't', 'title': 'n', 'page': 'p',
+                       'lic': 'l', 'w': 'w', 'h': 'h'}}
+    spec.update(kw)
+    return spec
+
+
+class FakeSources:
+    def __init__(self, registry, listed=None):
+        self.REGISTRY = registry
+        self._listed = list(registry) if listed is None else listed
+
+    def available(self):
+        return list(self._listed)
+
+
+class ModesSourcesTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self._bak = (hunt.sources, hunt.CUSTOM_DIR, hunt.KEYS_PATH)
+        hunt.CUSTOM_DIR = os.path.join(self.tmp, 'custom')
+        hunt.KEYS_PATH = os.path.join(self.tmp, 'keys.json')
+        registry = {
+            'openverse': {'name': 'openverse', 'label': 'Openverse',
+                          'kinds': list(hunt.MODES), 'about': 'photos',
+                          'search': lambda q, n: []},
+            'aic': {'name': 'aic', 'label': 'Art Institute',
+                    'kinds': ['illustration', 'sketch'], 'about': 'art',
+                    'search': lambda q, n: []},
+            'unsplash': {'name': 'unsplash', 'label': 'Unsplash',
+                         'kinds': ['reference', 'texture'], 'needs_key': 'UNSPLASH_TEST_KEY',
+                         'about': 'photos', 'search': lambda q, n: []},
+            'iconify': {'name': 'iconify', 'label': 'Iconify',
+                        'kinds': ['lineart'], 'about': 'icons',
+                        'search': lambda q, n: []},
+        }
+        hunt.sources = FakeSources(registry, ['openverse', 'aic', 'iconify'])
+
+    def tearDown(self):
+        hunt.sources, hunt.CUSTOM_DIR, hunt.KEYS_PATH = self._bak
+
+    def test_mode_selection(self):
+        ref = hunt.mode_source_names('reference')
+        self.assertIn('openverse', ref)
+        self.assertNotIn('iconify', ref)
+        self.assertNotIn('aic', ref)
+        self.assertIn('iconify', hunt.mode_source_names('lineart'))
+        self.assertIn('iconify', hunt.mode_source_names('anything'))
+        self.assertIn('aic', hunt.mode_source_names('anything'))
+
+    def test_keyed_source_needs_key(self):
+        ref = hunt.mode_source_names('reference')
+        self.assertNotIn('unsplash', ref)
+        hunt.save_keys({'UNSPLASH_TEST_KEY': 'abc'})
+        self.assertIn('unsplash', hunt.mode_source_names('reference'))
+
+    def test_custom_source_by_kind_and_enabled(self):
+        hunt.save_custom_source(source_spec(name='tex', kinds=['texture']))
+        self.assertIn('tex', hunt.mode_source_names('texture'))
+        self.assertNotIn('tex', hunt.mode_source_names('reference'))
+        self.assertEqual(hunt.mode_source_names('anything', enabled=['openverse']), ['openverse'])
+
+    def test_fetch_items_uses_selected_sources(self):
+        calls = []
+
+        def search(q, n):
+            calls.append((q, n))
+            return [{'title': q, 'url': f'https://img/{len(calls)}.jpg',
+                     'thumb': f'https://img/{len(calls)}-t.jpg', 'w': 800, 'h': 600}]
+
+        hunt.sources.REGISTRY['openverse']['search'] = search
+        job = {}
+        items = hunt.fetch_items('anything', ['fern'], ['leaf'], [], job,
+                                 enabled=['openverse'])
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]['src'], 'Openverse')
+        self.assertEqual(items[0]['tag'], 'fern')
+        self.assertEqual(calls, [('fern', hunt.SOURCE_LIMIT)])
+        self.assertEqual(job['stage'], 'fetching')
+
+    def test_sources_info(self):
+        info = hunt.sources_info()
+        names = {s['name'] for s in info['sources']}
+        self.assertIn('openverse', names)
+        self.assertIn('unsplash', names)
+        unsplash = {s['name']: s for s in info['sources']}['unsplash']
+        self.assertFalse(unsplash['available'])
+        self.assertEqual(unsplash['needs_key'], 'UNSPLASH_TEST_KEY')
+        self.assertEqual([m['id'] for m in info['modes']], list(hunt.MODES))
+
+    def test_legacy_modes(self):
+        self.assertEqual(hunt.canonical_mode('images'), 'anything')
+        self.assertEqual(hunt.canonical_mode('lineart'), 'lineart')
+        self.assertEqual(hunt.canonical_mode('nonsense'), 'anything')
+        for mode in ('anything', 'reference', 'illustration', 'sketch', 'lineart',
+                     'texture', 'scrapbook', 'match'):
+            self.assertIn(mode, hunt.MODES)
+
+
+class CustomSourceTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self._bak = (hunt.CUSTOM_DIR, hunt.KEYS_PATH, hunt._get_json)
+        hunt.CUSTOM_DIR = os.path.join(self.tmp, 'custom')
+        hunt.KEYS_PATH = os.path.join(self.tmp, 'keys.json')
+
+    def tearDown(self):
+        hunt.CUSTOM_DIR, hunt.KEYS_PATH, hunt._get_json = self._bak
+
+    def test_validate_accepts_good_spec(self):
+        got = hunt.validate_source_spec(source_spec())
+        self.assertIsNotNone(got)
+        self.assertEqual(got['name'], 'myart')
+        self.assertIsNone(hunt.source_spec_error(got))
+
+    def test_validate_rejects_bad_specs(self):
+        bad = [
+            source_spec(url='http://api.example.com/?q={query}'),
+            source_spec(url='https://api.example.com/?q=no-placeholder'),
+            source_spec(fields={'url': 'u'}),
+            source_spec(items='data..items'),
+            source_spec(fields={'url': 'u', 'thumb': 'bad path'}),
+            source_spec(name='../escape'),
+            source_spec(kinds=['halloween']),
+            source_spec(key_env='lowercase'),
+            'not a dict',
+        ]
+        for spec in bad:
+            with self.subTest(spec=spec):
+                self.assertIsNone(hunt.validate_source_spec(spec))
+                self.assertIsNotNone(hunt.source_spec_error(spec))
+
+    def test_dotted_paths(self):
+        data = {'images': [{'url': 'https://x/1.jpg'}, {'url': 'https://x/2.jpg'}],
+                'nested': {'deep': [{'v': 3}]}}
+        self.assertEqual(hunt.dotted_get(data, 'images.1.url'), 'https://x/2.jpg')
+        self.assertEqual(hunt.dotted_get(data, 'nested.deep.0.v'), 3)
+        self.assertEqual(hunt.dotted_get(data, '$.nested.deep.0.v'), 3)
+        self.assertIsNone(hunt.dotted_get(data, 'images.9.url'))
+        self.assertIsNone(hunt.dotted_get(data, 'nope.deep'))
+        self.assertEqual(hunt.dotted_get(data, ''), data)
+
+    def test_custom_search(self):
+        captured = {}
+
+        def fake_get(url, timeout, max_bytes=None, extra_headers=None):
+            captured.update(url=url, timeout=timeout, max_bytes=max_bytes)
+            return {'data': {'items': [
+                {'u': 'https://img/a.jpg', 't': 'https://img/a-t.jpg', 'n': 'A',
+                 'p': 'https://page/a', 'l': 'CC0', 'w': '1200', 'h': '800'},
+                {'u': 'http://insecure/b.jpg', 't': 'https://img/b-t.jpg', 'n': 'B'},
+                {'u': 'https://img/c.svg', 't': 'https://img/c-t.png', 'n': 'C'},
+            ]}}
+
+        hunt._get_json = fake_get
+        out = hunt.custom_search(source_spec(), 'red fox', 2)
+        self.assertEqual(len(out), 2)
+        self.assertIn('q=red+fox', captured['url'])
+        self.assertIn('limit=2', captured['url'])
+        self.assertEqual(captured['timeout'], 20)
+        self.assertEqual(captured['max_bytes'], 5 * 1024 * 1024)
+        self.assertEqual(out[0]['src'], 'My Art')
+        self.assertEqual(out[0]['url'], 'https://img/a.jpg')
+        self.assertEqual(out[0]['thumb'], 'https://img/a-t.jpg')
+        self.assertEqual(out[0]['w'], 1200)
+        self.assertEqual(out[1]['kind'], 'art')
+
+    def test_custom_search_error_is_empty(self):
+        def boom(*a, **k):
+            raise OSError('down')
+
+        hunt._get_json = boom
+        self.assertEqual(hunt.custom_search(source_spec(), 'x', 5), [])
+
+    def test_save_and_delete_custom_source(self):
+        hunt.save_custom_source(source_spec())
+        self.assertTrue(os.path.isfile(os.path.join(hunt.CUSTOM_DIR, 'myart.json')))
+        self.assertEqual([s['name'] for s in hunt.load_custom_sources()], ['myart'])
+        self.assertTrue(hunt.delete_custom_source('myart'))
+        self.assertFalse(hunt.delete_custom_source('myart'))
+
+
+class ChatSourceBlockTest(unittest.TestCase):
+    def test_source_block_parsed(self):
+        spec = source_spec()
+        reply = ('Try this source.\n'
+                 '```searches\n[{"query":"fern","kind":"scrapbook","why":"plates"}]\n```\n'
+                 '```source\n' + json.dumps(spec) + '\n```\n')
+        text, actions = hunt.parse_chat_reply(reply)
+        self.assertIn('Try this source.', text)
+        self.assertNotIn('```source', text)
+        self.assertNotIn('```searches', text)
+        searches = [a for a in actions if a.get('type') != 'source']
+        sources = [a for a in actions if a.get('type') == 'source']
+        self.assertEqual(len(searches), 1)
+        self.assertEqual(searches[0]['kind'], 'scrapbook')
+        self.assertEqual(len(sources), 1)
+        self.assertEqual(sources[0]['spec']['name'], 'myart')
+        self.assertIsNone(sources[0]['error'])
+
+    def test_bad_source_block_is_marked(self):
+        reply = '```source\n{"name":"../x"}\n```'
+        text, actions = hunt.parse_chat_reply(reply)
+        self.assertEqual(text, '')
+        self.assertEqual(len(actions), 1)
+        self.assertTrue(actions[0]['error'])
+
+
+class V5RankingFilteringTest(unittest.TestCase):
+    def test_rank_uses_relevance_resolution_and_mode_bonus(self):
+        items = [
+            {'title': 'Red fox woodcut', 'src': 'Commons', 'url': 'https://x/fox.jpg',
+             'w': 3000, 'h': 3000, 'line': .5},
+            {'title': 'Unrelated', 'src': 'Commons', 'url': 'https://x/other.jpg',
+             'w': 600, 'h': 600, 'line': 0},
+        ]
+        out = hunt.rank_items(items, 'red fox', ['fox woodcut'], 'match')
+        self.assertEqual(out[0]['title'], 'Red fox woodcut')
+        self.assertEqual(out[0]['score'], .9)
+        self.assertLess(out[1]['score'], out[0]['score'])
+
+    def test_near_duplicates_keep_best_ranked_item(self):
+        items = [
+            {'title': 'fox in the woods!', 'src': 'Commons', 'url': 'https://x/two.jpg', 'score': .8},
+            {'title': 'Fox — in the woods', 'src': 'Commons', 'url': 'https://x/one.jpg', 'score': .9},
+            {'title': 'A different fox', 'src': 'Openverse', 'url': 'https://y/one.png', 'score': .7},
+            {'title': 'Another title', 'src': 'Openverse', 'url': 'https://y/three.jpg', 'score': .6},
+        ]
+        out = hunt.dedupe_items(items)
+        self.assertEqual([i['url'] for i in out], ['https://x/one.jpg', 'https://y/three.jpg'])
+
+    def test_filter_items_composes_source_size_orientation_licence_kind_and_sort(self):
+        items = [
+            {'title': 'landscape', 'src': 'Photos', 'url': 'https://x/a.jpg', 'kind': 'image',
+             'w': 2400, 'h': 1200, 'lic': 'CC BY', 'score': .4},
+            {'title': 'square', 'src': 'Photos', 'url': 'https://x/b.jpg', 'kind': 'image',
+             'w': 1400, 'h': 1400, 'lic': 'Public Domain', 'score': .9},
+            {'title': 'svg', 'src': 'Icons', 'url': 'https://x/c.svg', 'kind': 'icon',
+             'lic': 'CC0', 'score': .8},
+        ]
+        out = hunt.filter_items(items, {'source': 'Photos', 'min_size': 1000,
+                                        'orientation': 'landscape', 'license': 'cc',
+                                        'kind': 'image', 'sort': 'largest'})
+        self.assertEqual([i['title'] for i in out], ['landscape'])
+
+    def test_filter_items_public_domain_svg_and_best_sort(self):
+        items = [
+            {'title': 'small PD', 'url': 'https://x/a.jpg', 'w': 900, 'h': 900,
+             'lic': 'Public domain', 'score': .2},
+            {'title': 'large CC0', 'url': 'https://x/b.jpg', 'w': 1200, 'h': 1000,
+             'lic': 'CC0', 'score': .9},
+            {'title': 'SVG CC', 'url': 'https://x/c.svg', 'kind': 'art',
+             'lic': 'CC BY 4.0', 'score': .5},
+        ]
+        pd = hunt.filter_items(items, {'license': 'pd'})
+        self.assertEqual([i['title'] for i in pd], ['large CC0', 'small PD'])
+        svg = hunt.filter_items(items, {'kind': 'svg', 'sort': 'source'})
+        self.assertEqual([i['title'] for i in svg], ['SVG CC'])
+
+
+class V5FetchTest(unittest.TestCase):
+    def setUp(self):
+        self._sources = hunt.sources
+        self._cache = hunt._SOURCE_CACHE.copy()
+        hunt._SOURCE_CACHE.clear()
+
+    def tearDown(self):
+        hunt.sources = self._sources
+        hunt._SOURCE_CACHE.clear()
+        hunt._SOURCE_CACHE.update(self._cache)
+
+    def setup_sources(self, registry):
+        hunt.sources = FakeSources(registry)
+
+    def test_source_response_cache_hits(self):
+        calls = []
+
+        def search(q, limit):
+            calls.append(q)
+            return [{'title': q, 'url': 'https://x/fern.jpg', 'w': 1200, 'h': 800}]
+
+        self.setup_sources({'fast': {'name': 'fast', 'label': 'Fast', 'kinds': ['anything'],
+                                     'about': '', 'search': search}})
+        for _ in range(2):
+            hunt.fetch_items('anything', ['fern'], [], [], {}, enabled=['fast'])
+        self.assertEqual(calls, ['fern'])
+
+    def test_partial_items_publish_before_slow_source_finishes(self):
+        release = threading.Event()
+        ready = threading.Event()
+
+        def fast(q, limit):
+            return [{'title': 'fast', 'url': 'https://x/fast.jpg', 'w': 1200, 'h': 800}]
+
+        def slow(q, limit):
+            ready.set()
+            release.wait(2)
+            return [{'title': 'slow', 'url': 'https://x/slow.jpg', 'w': 1200, 'h': 800}]
+
+        self.setup_sources({name: {'name': name, 'label': name, 'kinds': ['anything'],
+                                   'about': '', 'search': fn}
+                            for name, fn in (('fast', fast), ('slow', slow))})
+        job = {}
+        thread = threading.Thread(target=hunt.fetch_items,
+                                  args=('anything', ['fern'], [], [], job),
+                                  kwargs={'enabled': ['fast', 'slow']})
+        thread.start()
+        self.assertTrue(ready.wait(1))
+        deadline = time.time() + 1
+        while not job.get('items') and time.time() < deadline:
+            time.sleep(.005)
+        self.assertTrue(job.get('partial'))
+        self.assertEqual([i['title'] for i in job['items']], ['fast'])
+        release.set()
+        thread.join(2)
+        self.assertFalse(thread.is_alive())
+        self.assertFalse(job['partial'])
+        self.assertEqual(len(job['items']), 2)
+
+    def test_slow_source_is_capped_by_future_timeout(self):
+        def slow(q, limit):
+            time.sleep(.08)
+            return [{'title': 'late', 'url': 'https://x/late.jpg'}]
+
+        self.setup_sources({'slow': {'name': 'slow', 'label': 'Slow', 'kinds': ['anything'],
+                                     'about': '', 'search': slow}})
+        job = {}
+        start = time.monotonic()
+        with mock.patch.object(hunt, 'SOURCE_TIMEOUT', .01):
+            out = hunt.fetch_items('anything', ['fern'], [], [], job, enabled=['slow'])
+        self.assertLess(time.monotonic() - start, .06)
+        self.assertEqual(out, [])
+        self.assertFalse(job['partial'])
+        self.assertEqual(job['progress'], [1, 1])
+
+
+class V5CurateTest(unittest.TestCase):
+    def test_curate_timeout_keeps_scored_order(self):
+        items = [{'title': 'low', 'url': 'https://x/low.jpg', 'score': .2},
+                 {'title': 'high', 'url': 'https://x/high.jpg', 'score': .9}]
+        with mock.patch.object(hunt, 'ask_helper', return_value=''), \
+                mock.patch.object(hunt, 'model_label', return_value='AI'):
+            out = hunt.curate('model', 'default', 'fox', items, {})
+        self.assertEqual([i['title'] for i in out], ['high', 'low'])
+
+    def test_curate_sends_top_60_and_never_drops_items(self):
+        items = [{'title': f'title {i}', 'src': 'A', 'url': f'https://x/{i}.jpg',
+                  'w': 1000 + i, 'h': 800, 'line': .25, 'score': i / 100}
+                 for i in range(75)]
+        job = {}
+        prompts = []
+
+        def ask(model, effort, prompt, job):
+            prompts.append(prompt)
+            return '{"picks":[{"i":0,"why":"top result"}]}'
+
+        with mock.patch.object(hunt, 'ask_helper', side_effect=ask), \
+                mock.patch.object(hunt, 'model_label', return_value='AI'):
+            out = hunt.curate('model', 'default', 'fox', items, job)
+        self.assertEqual(len(out), 75)
+        self.assertEqual(out[0]['title'], 'title 74')
+        self.assertTrue(out[0]['pick'])
+        prompt = prompts[0]
+        self.assertIn('title 74', prompt)
+        self.assertNotIn('title 14', prompt)
+        self.assertIn('1074×800', prompt)
+        self.assertIn('line=', prompt)
+
+
+class V5ServerConfigTest(unittest.TestCase):
+    def test_worker_count_default_env_and_invalid_value(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(server.worker_count(), 3)
+        with mock.patch.dict(os.environ, {'IMAGE_HUNT_WORKERS': '5'}):
+            self.assertEqual(server.worker_count(), 5)
+        with mock.patch.dict(os.environ, {'IMAGE_HUNT_WORKERS': 'bad'}):
+            self.assertEqual(server.worker_count(), 3)
+
+    def test_ensure_worker_starts_configured_pool(self):
+        started = []
+
+        class FakeThread:
+            def __init__(self, target, name, daemon):
+                self.name = name
+
+            def start(self):
+                started.append(self.name)
+
+        with mock.patch.object(server, 'worker_count', return_value=3), \
+                mock.patch.object(server.threading, 'enumerate', return_value=[]), \
+                mock.patch.object(server.threading, 'Thread', FakeThread):
+            server.ensure_worker()
+        self.assertEqual(started, ['hunt-worker-1', 'hunt-worker-2', 'hunt-worker-3'])
+
+    def test_job_payload_exposes_only_live_partial_items(self):
+        item = {'url': 'https://x/a.jpg'}
+        self.assertEqual(server.job_payload({'status': 'running', 'partial': True,
+                                             'items': [item]})['items'], [item])
+        self.assertEqual(server.job_payload({'status': 'running', 'partial': False,
+                                             'items': [item]})['items'], [])
+        self.assertEqual(server.job_payload({'status': 'done', 'items': [item]})['items'], [item])
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)
+
+
+class IIIFDedupe(unittest.TestCase):
+    def test_iiif_images_not_collapsed(self):
+        mk = lambda i: {'title': f't{i}', 'src': 'AIC', 'url': f'https://www.artic.edu/iiif/2/id-{i}/full/1686,/0/default.jpg'}
+        self.assertEqual(len(hunt.dedupe_items([mk(1), mk(2), mk(3)])), 3)
+        self.assertEqual(len(hunt.dedupe_items([mk(1), dict(mk(1), title='x')])), 1)

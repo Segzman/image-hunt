@@ -27,6 +27,7 @@ MANIFEST = {'name': 'Image Hunt', 'short_name': 'Image Hunt', 'start_url': '/', 
 JOBS = {}
 JOBS_LOCK = threading.Lock()
 JOB_QUEUE = queue.Queue()
+WORKER_LOCK = threading.Lock()
 
 CHATS = {}
 CHATS_LOCK = threading.Lock()
@@ -81,10 +82,27 @@ def saved_entries():
     return out
 
 
+def worker_count():
+    try:
+        return max(1, int(os.environ.get('IMAGE_HUNT_WORKERS') or 3))
+    except (TypeError, ValueError):
+        return 3
+
+
+def job_payload(job):
+    payload = dict(job)
+    if payload.get('status') != 'done' and not payload.get('partial'):
+        payload['items'] = []
+    return payload
+
+
 def ensure_worker():
-    if any(t.name == 'hunt-worker' and t.is_alive() for t in threading.enumerate()):
-        return
-    threading.Thread(target=worker, name='hunt-worker', daemon=True).start()
+    with WORKER_LOCK:
+        alive = {t.name for t in threading.enumerate() if t.name.startswith('hunt-worker-') and t.is_alive()}
+        for i in range(1, worker_count() + 1):
+            name = f'hunt-worker-{i}'
+            if name not in alive:
+                threading.Thread(target=worker, name=name, daemon=True).start()
 
 
 def worker():
@@ -210,6 +228,9 @@ class Handler(BaseHTTPRequestHandler):
                 refresh = urllib.parse.parse_qs(p.query).get('refresh') == ['1']
                 self._json(200, hunt.discover_models(refresh=refresh))
                 return
+            if path == '/api/sources':
+                self._json(200, hunt.sources_info())
+                return
             if path.startswith('/api/chat/'):
                 cid = path[len('/api/chat/'):]
                 with CHATS_LOCK:
@@ -237,8 +258,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not job:
                     self._json(404, {'error': 'no such job'})
                     return
-                job['items'] = job.get('items') if job.get('status') == 'done' else []
-                self._json(200, job)
+                self._json(200, job_payload(job))
                 return
             self._json(404, {'error': 'not found'})
         except (BrokenPipeError, ConnectionResetError):
@@ -249,6 +269,16 @@ class Handler(BaseHTTPRequestHandler):
     def do_DELETE(self):
         p = urllib.parse.urlparse(self.path)
         path = urllib.parse.unquote(p.path)
+        if path.startswith('/api/sources/'):
+            name = os.path.basename(urllib.parse.unquote(path[len('/api/sources/'):]))
+            if not name or name.startswith('.'):
+                self._json(400, {'error': 'bad source name'})
+                return
+            if not hunt.delete_custom_source(name):
+                self._json(404, {'error': 'no such custom source'})
+                return
+            self._json(200, {'ok': True})
+            return
         if path.startswith('/api/saved/'):
             slug = os.path.basename(urllib.parse.unquote(path[len('/api/saved/'):]))
             if not slug or slug.startswith('.'):
@@ -270,6 +300,40 @@ class Handler(BaseHTTPRequestHandler):
         p = urllib.parse.urlparse(self.path)
         path = urllib.parse.unquote(p.path)
         try:
+            if path == '/api/sources':
+                body = self._body()
+                spec = body.get('spec') if isinstance(body.get('spec'), dict) else body
+                err = hunt.source_spec_error(spec)
+                if err:
+                    self._json(400, {'error': err})
+                    return
+                spec = hunt.validate_source_spec(spec)
+                test = ' '.join(str(body.get('query') or body.get('test') or spec['label']).split())
+                hits = [h for h in hunt.custom_search(spec, test or 'art', 6)
+                        if h.get('url') and h.get('thumb')]
+                if not hits:
+                    self._json(422, {'error': 'test search returned no items with url+thumb'})
+                    return
+                try:
+                    spec = hunt.save_custom_source(spec)
+                except ValueError as e:
+                    self._json(400, {'error': str(e)})
+                    return
+                self._json(200, {'ok': True, 'name': spec['name'], 'spec': spec,
+                                 'hits': hits[:4]})
+                return
+            if path == '/api/keys':
+                body = self._body()
+                if not isinstance(body, dict):
+                    self._json(400, {'error': 'keys must be an object'})
+                    return
+                try:
+                    saved = hunt.save_keys(body)
+                except ValueError as e:
+                    self._json(400, {'error': str(e)})
+                    return
+                self._json(200, {'ok': True, 'saved': saved})
+                return
             if path == '/api/chat':
                 body = self._body()
                 model = str(body.get('model') or '')
@@ -306,10 +370,14 @@ class Handler(BaseHTTPRequestHandler):
                 if not query:
                     self._json(400, {'error': 'query required'})
                     return
-                kind = body.get('kind') or 'images'
-                if kind not in ('images', 'lineart', 'match'):
-                    self._json(400, {'error': 'kind must be images|lineart|match'})
+                mode = str(body.get('mode') or body.get('kind') or 'anything')
+                if mode not in hunt.MODES and mode not in hunt.LEGACY_MODES:
+                    self._json(400, {'error': 'mode must be ' + '|'.join(hunt.MODES)})
                     return
+                mode = hunt.canonical_mode(mode)
+                picked = body.get('sources')
+                sources_in = [str(s) for s in picked if isinstance(s, str)][:60] \
+                    if isinstance(picked, list) else None
                 model = str(body.get('model') or hunt.discover_models().get('default') or 'none')
                 if model != 'none' and model not in valid_models():
                     self._json(400, {'error': 'unknown model'})
@@ -317,11 +385,12 @@ class Handler(BaseHTTPRequestHandler):
                 effort = str(body.get('effort') or 'default')
                 limit = int(body.get('limit') or 200)
                 jid = uuid.uuid4().hex[:12]
-                job = {'id': jid, 'query': query, 'kind': kind, 'model': model,
+                job = {'id': jid, 'query': query, 'kind': mode, 'mode': mode, 'model': model,
+                       'sources': sources_in,
                        'effort': effort, 'linework_only': bool(body.get('linework_only')),
                        'limit': limit, 'status': 'queued', 'stage': 'queued',
                        'stage_text': 'Queued…', 'progress': None, 'log': [],
-                       'items': [], 'slug': None, 'error': None}
+                       'items': [], 'partial': False, 'slug': None, 'error': None}
                 with JOBS_LOCK:
                     JOBS[jid] = job
                 ensure_worker()

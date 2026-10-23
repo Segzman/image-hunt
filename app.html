@@ -52,6 +52,22 @@
   #side{flex:0 0 235px;border-right:2px solid #400;padding:8px;position:sticky;top:52px;align-self:flex-start;max-height:calc(100vh - 60px);overflow:auto;box-sizing:border-box}
   #sidehead{font-size:17px;color:#ff2a00;letter-spacing:1px;margin-bottom:6px;display:flex;justify-content:space-between;align-items:center}
   #sidehead button{padding:0 7px;font-size:13px}
+  #srcpanel{border-bottom:2px solid #400;padding-bottom:8px;margin-bottom:8px}
+  #srcpanelhead{font-size:15px;color:#ff2a00;letter-spacing:1px;margin-bottom:5px;display:flex;justify-content:space-between;align-items:center}
+  #srcpanelhead button{padding:0 7px;font-size:12px}
+  .srcrow{display:flex;align-items:center;gap:4px;font:11px/1.5 system-ui,sans-serif;color:#d99;padding:1px 0}
+  .srcrow label{flex:1;border:0;background:none;padding:0;cursor:pointer;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+  .srcrow.off{opacity:.5}
+  .srcrow .keybtn,.srcrow .srcdel{font:10px system-ui;padding:0 4px;border-width:1px;flex:none}
+  .srcrow .keybtn{color:#ff8}
+  .srcrow .srcdel{color:#f55}
+  .srcrow .custom{font:9px system-ui;color:#0f0;flex:none}
+  #keybox{display:flex;gap:3px;margin-top:4px;align-items:center;font:10px system-ui;color:#f88}
+  #keybox input[type=password]{flex:1;min-width:0;font:10px system-ui;padding:1px 4px}
+  #keybox button{font:10px system-ui;padding:0 5px}
+  #srcnote{font:10px system-ui;color:#b77;margin-top:4px}
+  .srchits{display:flex;gap:4px;margin-top:5px;flex-wrap:wrap}
+  .srchits img{width:48px;height:48px;object-fit:cover;border:1px solid #800;background:#000}
   .save{cursor:pointer;padding:5px 7px;border:2px solid #400;margin-bottom:6px;background:#200}
   .save:hover{border-color:#f00}
   .save.on{border-color:#ff0}
@@ -61,6 +77,11 @@
   .save .del{color:#f55;background:none;border:0;padding:0 3px;font:12px system-ui;cursor:pointer;flex:none}
   main{flex:1;min-width:0;padding:10px}
   #tools{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px;padding:6px 8px;background:#200;border:2px solid #400}
+  #filters{display:flex;gap:6px;align-items:center;flex-wrap:wrap;width:100%;font-size:12px}
+  #srcchips{display:flex;gap:4px;align-items:center;flex-wrap:wrap;width:100%}
+  .srcchip{font:11px system-ui;padding:2px 7px;border-width:1px;background:#300;color:#d99}
+  .srcchip.on{background:#800;border-color:#ff0;color:#fff}
+  #filters select{padding:2px 5px;font:12px system-ui}
   #count{font-size:13px;color:#f88;white-space:nowrap}
   #empty{color:#966;font-family:system-ui;text-align:center;padding:40px 0}
   #grid{columns:max(var(--sz),180px);column-gap:10px}
@@ -113,11 +134,16 @@
 <header>
   <h1><img src="/favicon.png" alt="" style="height:26px;vertical-align:-4px"> IMAGE HUNT</h1>
   <a id="bm" href="imagehunt://open" title="Drag to your bookmarks bar: opening it starts Image Hunt even when it's off" onclick="return false" style="color:#fdd;text-decoration:none;border:2px dashed #f00;padding:3px 8px;cursor:grab">🔖 Image Hunt</a>
-  <input id="query" placeholder="what are we hunting? — spooky skulls, woodcut bottles…" size="30">
-  <select id="kind">
-    <option value="images">Images &amp; memes</option>
-    <option value="lineart">Line art SVG</option>
-    <option value="match">Style match (woodcut-ish)</option>
+  <input id="query" placeholder="what are we hunting? — ferns, gears, paper textures…" size="30">
+  <select id="kind" title="what kind of images to hunt">
+    <option value="anything" title="whatever fits the idea: photos, memes, art, objects">Anything</option>
+    <option value="reference" title="clear, well-lit photographs to draw from">Photo reference</option>
+    <option value="illustration" title="illustrations, prints and colourful artwork">Illustration &amp; art</option>
+    <option value="sketch" title="drawings, sketches and etchings, ink linework emphasised">Sketch &amp; etching</option>
+    <option value="lineart" title="clean line art: monochrome SVG icons and colourful SVG illustrations">Line art SVG</option>
+    <option value="texture" title="textures, patterns and paper backgrounds">Texture &amp; pattern</option>
+    <option value="scrapbook" title="vintage ephemera: labels, stamps, tickets, botanical and scientific plates">Scrapbook &amp; ephemera</option>
+    <option value="match" title="woodcut / engraving style vintage ink illustrations">Style match (woodcut-ish)</option>
   </select>
   <div id="modelwrap">
     <div id="modelrow">
@@ -154,12 +180,24 @@
 </div>
 <div id="wrap">
   <aside id="side">
+    <div id="srcpanel">
+      <div id="srcpanelhead">SOURCES <button id="srcrefresh" title="reload sources and keys">↻</button></div>
+      <div id="srclist"></div>
+      <div id="srcnote" class="hide"></div>
+    </div>
     <div id="sidehead">SAVED <button id="refresh" title="reload saved list">↻</button></div>
     <div id="saves"></div>
   </aside>
   <main>
     <div id="tools">
-      <select id="src"><option value="">all sources</option></select>
+      <div id="filters">
+        <div id="srcchips" role="group" aria-label="source filter"></div>
+        <label>min size <select id="minsize"><option value="0">any</option><option value="1000">1000 px</option><option value="2000">2000 px</option><option value="3000">3000 px</option></select></label>
+        <label>orientation <select id="orientation"><option value="any">any</option><option value="portrait">portrait</option><option value="landscape">landscape</option><option value="square">square</option></select></label>
+        <label>licence <select id="license"><option value="any">any</option><option value="pd">public domain &amp; CC0</option><option value="cc">CC</option></select></label>
+        <label>kind <select id="itemkind"><option value="any">any</option><option value="image">image</option><option value="svg">svg</option></select></label>
+        <label>sort <select id="sort"><option value="best">best</option><option value="largest">largest</option><option value="source">source</option></select></label>
+      </div>
       <input id="tx" placeholder="filter…" style="width:110px">
       <label><input type="checkbox" id="favonly"> ★ only</label>
       <label><input type="checkbox" id="fry"> DEEP FRY 🔥</label>
@@ -204,9 +242,131 @@ const jdel = u => fetch(u, {method:'DELETE'}).then(r => r.json());
 
 let MODELS = [];
 const MODEL_ERRORS = new Set();
-const CUR = {slug: null, meta: null, items: []};
+const CUR = {slug: null, meta: null, items: [], partialJob: null, partialSig: ''};
+const FILTER_DEFAULTS = {source:'', min_size:'0', orientation:'any', license:'any', kind:'any', sort:'best', text:'', favorites_only:false};
+let FILTERS = {...FILTER_DEFAULTS};
 let FAVS = new Set();
+let SOURCES_UI = [];
+const MODES_UI = new Map();
 const favKey = () => 'favs:' + (CUR.slug || 'none');
+
+/* ---------- modes + sources ---------- */
+function setMode(kind){
+  const sel = $('kind');
+  const want = (kind === 'images' || !kind) ? 'anything' : kind;
+  sel.value = [...sel.options].some(o => o.value === want) ? want : 'anything';
+  if (typeof syncSourceChecks === 'function') syncSourceChecks();
+}
+function fillModes(modes){
+  if (!Array.isArray(modes) || !modes.length) return;
+  const sel = $('kind');
+  const cur = sel.value;
+  sel.innerHTML = '';
+  modes.forEach(m => {
+    MODES_UI.set(m.id, m);
+    const o = new Option(m.label, m.id);
+    o.title = m.about || '';
+    sel.append(o);
+  });
+  setMode(cur);
+}
+function modeWantsSource(mode, s){
+  const m = MODES_UI.get(mode);
+  if (!m) return true;
+  if (m.sources === 'all') return true;
+  if (Array.isArray(m.sources) && m.sources.includes(s.name)) return true;
+  return !!s.custom && (s.kinds || []).includes(mode);
+}
+function syncSourceChecks(){
+  const mode = $('kind').value;
+  const byName = new Map(SOURCES_UI.map(s => [s.name, s]));
+  document.querySelectorAll('#srclist input[type=checkbox]').forEach(cb => {
+    if (cb.disabled) return;
+    const s = byName.get(cb.value);
+    cb.checked = s ? modeWantsSource(mode, s) : false;
+  });
+}
+function keyRow(env){
+  const old = $('keybox');
+  if (old) old.remove();
+  const box = document.createElement('div');
+  box.id = 'keybox';
+  const lab = document.createElement('span');
+  lab.textContent = env + ':';
+  const inp = document.createElement('input');
+  inp.type = 'password';
+  inp.autocomplete = 'off';
+  inp.placeholder = 'paste key';
+  const save = document.createElement('button');
+  save.textContent = 'save';
+  save.onclick = () => {
+    const value = inp.value.trim();
+    if (!value) return;
+    jpost('/api/keys', {[env]: value}).then(r => {
+      if (r && r.ok){ inp.value = ''; box.remove(); toast('key saved for ' + env); refreshSources(); }
+      else toast('key save failed' + (r && r.error ? ': ' + r.error : ''));
+    }).catch(() => toast('key save failed'));
+  };
+  box.append(lab, inp, save);
+  $('srcpanel').append(box);
+  inp.focus();
+}
+function fillSources(d){
+  SOURCES_UI = d.sources || [];
+  fillModes(d.modes);
+  const box = $('srclist');
+  box.innerHTML = '';
+  SOURCES_UI.forEach(s => {
+    const row = document.createElement('div');
+    row.className = 'srcrow' + (s.available ? '' : ' off');
+    row.title = s.about || '';
+    const lab = document.createElement('label');
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.value = s.name;
+    cb.checked = !!s.available;
+    cb.disabled = !s.available;
+    lab.append(cb, document.createTextNode(' ' + (s.label || s.name)));
+    row.append(lab);
+    if (s.custom){
+      const tag = document.createElement('span');
+      tag.className = 'custom';
+      tag.textContent = 'custom';
+      row.append(tag);
+      const del = document.createElement('button');
+      del.className = 'srcdel';
+      del.textContent = '✕';
+      del.title = 'delete this custom source';
+      del.onclick = () => {
+        if (!confirm('delete custom source "' + (s.label || s.name) + '"?')) return;
+        jdel('/api/sources/' + encodeURIComponent(s.name)).then(r => {
+          if (r && r.ok){ toast('source deleted'); refreshSources(); }
+          else toast('delete failed');
+        }).catch(() => toast('delete failed'));
+      };
+      row.append(del);
+    }
+    if (!s.available && s.needs_key){
+      const key = document.createElement('button');
+      key.className = 'keybtn';
+      key.textContent = 'add key';
+      key.title = 'needs ' + s.needs_key;
+      key.onclick = () => keyRow(s.needs_key);
+      row.append(key);
+    }
+    box.append(row);
+  });
+  $('srcnote').classList.toggle('hide', SOURCES_UI.length > 0);
+  $('srcnote').textContent = SOURCES_UI.length ? '' : 'no sources loaded';
+  syncSourceChecks();
+}
+function refreshSources(){
+  return jget('/api/sources').then(fillSources).catch(() => {});
+}
+function pickedSources(){
+  return [...document.querySelectorAll('#srclist input[type=checkbox]')]
+    .filter(c => c.checked).map(c => c.value);
+}
 
 function loadFavs(){
   try { FAVS = new Set(JSON.parse(localStorage[favKey()] || '[]')); }
@@ -401,6 +561,7 @@ function resumeActive(){
       applyStage(job);
       $('pstat').textContent = job.stage_text || (job.status === 'queued' ? 'queued…' : 'hunting…');
       if (job.query) $('query').value = job.query;
+      setMode(job.kind);
       setTimeout(poll, 1500);
     }
   }).catch(() => {});
@@ -412,11 +573,16 @@ function poll(){
     applyStage(job);
     appendLog((job.log || []).slice($('plog').dataset.n || 0));  // server sends the full log each poll
     $('plog').dataset.n = (job.log || []).length;
+    if (job.partial && Array.isArray(job.items) && job.items.length){
+      const sig = job.items.map(i => i.url).join('\n');
+      if (CUR.partialJob !== job.id || CUR.partialSig !== sig) updatePartialItems(job.items, job);
+    }
     if (job.status === 'done'){
       JID = null;
       hideProg();
       $('go').disabled = false;
-      setItems(job.items || [], job.slug || CUR.slug, null);
+      setItems(job.items || [], job.slug || CUR.slug,
+        {slug:job.slug, query:job.query, kind:job.kind, title:job.query});
       refreshSaved();
     } else if (job.status === 'error'){
       JID = null;
@@ -440,6 +606,17 @@ function startSearch(){
     linework_only: $('lwo').checked,
     limit: 60
   };
+  if (SOURCES_UI.length) body.sources = pickedSources();
+  CUR.slug = null;
+  CUR.meta = {query:q, kind:body.kind, title:q};
+  CUR.items = [];
+  CUR.partialJob = null;
+  CUR.partialSig = '';
+  FAVS = new Set();
+  FILTERS = {...FILTER_DEFAULTS};
+  applyFilterControls();
+  history.replaceState(null, '', location.pathname);
+  render();
   JID = null;
   $('plog').innerHTML = '';
   $('plog').dataset.n = 0;
@@ -462,12 +639,29 @@ function setItems(items, slug, meta){
   CUR.items = items || [];
   CUR.slug = slug || null;
   CUR.meta = meta || null;
+  CUR.partialJob = null;
+  CUR.partialSig = '';
+  setMode(CUR.meta && CUR.meta.kind);
   loadFavs();
-  fillSrc();
+  loadFilters();
   render();
   if (slug) history.replaceState(null, '', location.pathname + '?s=' + encodeURIComponent(slug));
   document.title = CUR.meta && CUR.meta.title ? 'IMAGE HUNT — ' + CUR.meta.title : 'IMAGE HUNT';
   refreshSaved();
+}
+function updatePartialItems(items, job){
+  if (CUR.partialJob !== job.id){
+    CUR.slug = null;
+    CUR.meta = {query:job.query, kind:job.kind, title:job.query};
+    CUR.partialJob = job.id;
+    FAVS = new Set();
+    FILTERS = {...FILTER_DEFAULTS};
+    applyFilterControls();
+    setMode(job.kind);
+  }
+  CUR.partialSig = items.map(i => i.url).join('\n');
+  CUR.items = items || [];
+  render();
 }
 function loadSaved(slug){
   jget('/api/saved/' + encodeURIComponent(slug)).then(d => {
@@ -476,19 +670,82 @@ function loadSaved(slug){
   }).catch(() => toast('could not load ' + slug));
 }
 /* ---------- gallery ---------- */
-function fillSrc(){
-  const sel = $('src');
-  const cur = sel.value;
-  sel.innerHTML = '<option value="">all sources</option>';
-  [...new Set(CUR.items.map(i => i.src))].sort().forEach(s => sel.add(new Option(s, s)));
-  if ([...sel.options].some(o => o.value === cur)) sel.value = cur;
+function filterKey(){ return CUR.slug ? 'filters:' + CUR.slug : null; }
+function loadFilters(){
+  FILTERS = {...FILTER_DEFAULTS};
+  try {
+    const key = filterKey(), saved = key && localStorage[key];
+    if (saved){
+      const data = JSON.parse(saved);
+      if (data && typeof data === 'object') FILTERS = {...FILTERS, ...data};
+    }
+  } catch {}
+  FILTERS.min_size = ['0','1000','2000','3000'].includes(String(FILTERS.min_size)) ? String(FILTERS.min_size) : '0';
+  FILTERS.orientation = ['any','portrait','landscape','square'].includes(FILTERS.orientation) ? FILTERS.orientation : 'any';
+  FILTERS.license = ['any','pd','cc'].includes(FILTERS.license) ? FILTERS.license : 'any';
+  FILTERS.kind = ['any','image','svg'].includes(FILTERS.kind) ? FILTERS.kind : 'any';
+  FILTERS.sort = ['best','largest','source'].includes(FILTERS.sort) ? FILTERS.sort : 'best';
+  FILTERS.source = String(FILTERS.source || '');
+  FILTERS.text = String(FILTERS.text || '');
+  FILTERS.favorites_only = !!FILTERS.favorites_only;
+  applyFilterControls();
 }
+function saveFilters(){
+  try { const key = filterKey(); if (key) localStorage[key] = JSON.stringify(FILTERS); } catch {}
+}
+function applyFilterControls(){
+  if (!$('minsize')) return;
+  $('minsize').value = FILTERS.min_size;
+  $('orientation').value = FILTERS.orientation;
+  $('license').value = FILTERS.license;
+  $('itemkind').value = FILTERS.kind;
+  $('sort').value = FILTERS.sort;
+  $('tx').value = FILTERS.text;
+  $('favonly').checked = FILTERS.favorites_only;
+}
+function fillSourceChips(){
+  const box = $('srcchips'), counts = new Map();
+  CUR.items.forEach(i => { const s = String(i.src || 'Unknown'); counts.set(s, (counts.get(s) || 0) + 1); });
+  if (!CUR.partialJob && FILTERS.source && !counts.has(FILTERS.source)) FILTERS.source = '';
+  box.innerHTML = '';
+  const add = (label, value, count) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'srcchip' + (FILTERS.source === value ? ' on' : '');
+    b.textContent = `${label} (${count})`;
+    b.setAttribute('aria-pressed', FILTERS.source === value ? 'true' : 'false');
+    b.onclick = () => { FILTERS.source = value; saveFilters(); render(); };
+    box.append(b);
+  };
+  add('all sources', '', CUR.items.length);
+  [...counts.keys()].sort((a,b) => a.localeCompare(b)).forEach(s => add(s, s, counts.get(s)));
+}
+function licenceMatches(i, value){
+  const lic = String(i.lic || '').toLowerCase();
+  if (value === 'pd') return /public domain|\bpd\b|\bcc0\b/.test(lic);
+  if (value === 'cc') return (/\bcc\b|creative commons/.test(lic) && !/\bcc0\b/.test(lic));
+  return true;
+}
+function isSvg(i){ return ['icon','art'].includes(i.kind) || /\.svg(?:[?#]|$)/i.test(String(i.url || '')); }
 function shownItems(){
-  const s = $('src').value, t = $('tx').value.trim().toLowerCase(), fo = $('favonly').checked;
-  return CUR.items.filter(i =>
-    (!s || i.src === s)
-    && (!t || (String(i.title || '') + ' ' + String(i.src || '') + ' ' + String(i.tag || '')).toLowerCase().includes(t))
-    && (!fo || FAVS.has(i.url)));
+  const t = FILTERS.text.trim().toLowerCase();
+  const out = CUR.items.filter(i => {
+    const w = Number(i.w) || 0, h = Number(i.h) || 0;
+    const orient = FILTERS.orientation;
+    return (!FILTERS.source || i.src === FILTERS.source)
+      && (!Number(FILTERS.min_size) || (w >= Number(FILTERS.min_size) && h >= Number(FILTERS.min_size)))
+      && (orient === 'any' || (orient === 'portrait' && h > w) || (orient === 'landscape' && w > h)
+        || (orient === 'square' && w && h && Math.abs(w-h) / Math.max(w,h) <= .1))
+      && licenceMatches(i, FILTERS.license)
+      && (FILTERS.kind === 'any' || (FILTERS.kind === 'svg' ? isSvg(i) : !isSvg(i)))
+      && (!t || (String(i.title || '') + ' ' + String(i.src || '') + ' ' + String(i.tag || '')).toLowerCase().includes(t))
+      && (!FILTERS.favorites_only || FAVS.has(i.url));
+  });
+  return out.map((item,index) => ({item,index})).sort((a,b) => {
+    if (FILTERS.sort === 'largest') return ((Number(b.item.w)||0)*(Number(b.item.h)||0))-((Number(a.item.w)||0)*(Number(a.item.h)||0)) || a.index-b.index;
+    if (FILTERS.sort === 'source') return String(a.item.src || '').localeCompare(String(b.item.src || '')) || a.index-b.index;
+    return (Number(b.item.score)||0)-(Number(a.item.score)||0) || a.index-b.index;
+  }).map(x => x.item);
 }
 function dlUrlFor(i){
   if (i.kind !== 'icon') return i.url;
@@ -576,6 +833,7 @@ function card(i){
   return fig;
 }
 function render(){
+  fillSourceChips();
   const shown = shownItems();
   const grid = $('grid'), icons = $('icons');
   grid.innerHTML = '';
@@ -588,7 +846,7 @@ function render(){
   grid.classList.toggle('hide', !nImg);
   icons.classList.toggle('hide', !nIcon);
   $('empty').classList.toggle('hide', shown.length > 0);
-  $('count').textContent = `${shown.length} shown · ${FAVS.size} ★`;
+  $('count').textContent = `${shown.length} of ${CUR.items.length} shown · ${FAVS.size} ★`;
 }
 /* ---------- controls ---------- */
 function setVars(){
@@ -601,6 +859,7 @@ function setVars(){
     : '#111');
 }
 $('model').onchange = fillEfforts;
+$('kind').onchange = syncSourceChecks;
 $('modelrefresh').onclick = () => {
   const button = $('modelrefresh');
   button.disabled = true;
@@ -610,14 +869,17 @@ $('modelrefresh').onclick = () => {
 };
 $('go').onclick = startSearch;
 $('query').onkeydown = e => { if (e.key === 'Enter') startSearch(); };
-$('src').onchange = render;
-$('tx').oninput = render;
-$('favonly').onchange = render;
+$('tx').oninput = () => { FILTERS.text = $('tx').value; saveFilters(); render(); };
+$('favonly').onchange = () => { FILTERS.favorites_only = $('favonly').checked; saveFilters(); render(); };
+for (const [id,key] of [['minsize','min_size'],['orientation','orientation'],['license','license'],['itemkind','kind'],['sort','sort']]){
+  $(id).onchange = () => { FILTERS[key] = $(id).value; saveFilters(); render(); };
+}
 $('fry').onchange = () => document.body.classList.toggle('fried', $('fry').checked);
 $('ink').oninput = setVars;
 $('bg').onchange = setVars;
 $('sz').oninput = setVars;
 $('refresh').onclick = () => { refreshSaved(); toast('refreshed'); };
+$('srcrefresh').onclick = () => { refreshSources(); toast('sources refreshed'); };
 $('reveal').onclick = () => {
   if (!CUR.slug) { toast('no folder yet — run a search'); return; }
   jpost('/api/reveal', {slug: CUR.slug})
@@ -677,14 +939,51 @@ function chatMsgNode(role, text){
   m.append(t);
   return m;
 }
+function sourceAction(a){
+  const c = document.createElement('div');
+  c.className = 'act';
+  const b = document.createElement('b');
+  b.textContent = '🧩 Add source ' + (a.label || (a.spec && a.spec.name) || '');
+  c.append(b);
+  if (a.spec && a.spec.about){
+    const w = document.createElement('small');
+    w.textContent = a.spec.about;
+    c.append(document.createElement('br'), w);
+  }
+  if (Array.isArray(a.hits) && a.hits.length){
+    const strip = document.createElement('div');
+    strip.className = 'srchits';
+    a.hits.slice(0, 4).forEach(h => {
+      const img = document.createElement('img');
+      img.src = h.thumb;
+      img.alt = h.title || '';
+      img.title = h.title || '';
+      strip.append(img);
+    });
+    c.append(strip);
+  }
+  const add = document.createElement('button');
+  add.textContent = 'Add source';
+  add.title = 'validate it again and save it for future searches';
+  add.onclick = () => {
+    add.disabled = true;
+    jpost('/api/sources', {spec: a.spec, query: a.query || ''}).then(r => {
+      if (r && r.ok){ toast('source added: ' + (r.name || 'ok')); refreshSources(); }
+      else { add.disabled = false; toast('add failed' + (r && r.error ? ': ' + r.error : '')); }
+    }).catch(() => { add.disabled = false; toast('add failed'); });
+  };
+  c.append(add);
+  return c;
+}
 function chatAction(a){
+  if (a.type === 'source') return sourceAction(a);
   const c = document.createElement('div');
   c.className = 'act';
   const q = document.createElement('b');
   q.textContent = '🔎 ' + (a.query || '');
   c.append(q);
   const k = document.createElement('small');
-  k.textContent = ' · ' + (a.kind || 'images') + (a.linework_only ? ' · linework only' : '');
+  k.textContent = ' · ' + (a.kind || 'anything') + (a.linework_only ? ' · linework only' : '');
   c.append(k);
   if (a.why){
     const w = document.createElement('small');
@@ -704,7 +1003,7 @@ function chatAction(a){
 }
 function runAction(a, go){
   $('query').value = a.query || '';
-  if (a.kind) $('kind').value = a.kind;
+  if (a.kind) setMode(a.kind);
   $('lwo').checked = !!a.linework_only;
   if (go) startSearch();
 }
@@ -804,6 +1103,7 @@ function init(){
   setVars();
   initDetails();
   refreshSaved().catch(() => {});
+  refreshSources();
   jget('/api/models').then(d => {
     fillModels(d);
     chatSetModel();

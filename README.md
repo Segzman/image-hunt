@@ -1,8 +1,22 @@
 # Image Hunt
 
-Local image search for poster making: memes, line-art SVGs and woodcut-style matches from Openverse, Wikimedia Commons
-and Iconify, ranked by a linework scorer. An optional AI helper (via [ag](https://github.com/Segzman/ag)) plans the
-searches, curates the results and brainstorms with you in chat.
+Local image search for artists: illustration, design, scrapbooking, textures, drawing reference, line-art SVGs and
+woodcut-style matches. It fans out over public collections (Openverse, Wikimedia Commons, Iconify, Art Institute of
+Chicago, The Met, Cleveland, Library of Congress, NASA, Smithsonian) and optional keyed sources (Unsplash, Pexels,
+Pixabay), with a linework scorer for ink drawings. An optional AI helper (via
+[ag](https://github.com/Segzman/ag)) plans the searches, curates the results and brainstorms with you in chat.
+
+## Modes and sources
+
+Pick a mode in the top bar: **Anything**, **Photo reference**, **Illustration & art**, **Sketch & etching**,
+**Line art SVG**, **Texture & pattern**, **Scrapbook & ephemera**, or **Style match**. Each mode chooses suitable
+sources and may turn on ink-linework scoring; saved searches keep working with the older Images / Line art / Style
+match names.
+
+The **Sources** panel lists every source. Untick one to leave it out of the next search; keyed sources stay greyed
+until you click **add key** and paste the key (saved to `~/.config/image-hunt/keys.json`, mode 0600). Custom sources
+are declarative JSON files in `sources/custom/<name>.json` and can be added at runtime; the brainstorm chat can also
+propose one (it is validated with a test search and only saved when you click **Add source**).
 
 ## Install
 
@@ -34,3 +48,7 @@ Uninstall: `sh install.sh --uninstall` / `install.cmd -Uninstall`, then delete t
 ## Share it
 
 `sh make_dist.sh` → `dist/image-hunt.zip` (committed files only; your saved searches and AI state stay out).
+
+## License
+
+MIT
