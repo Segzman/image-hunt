@@ -1,0 +1,6 @@
+__pycache__/
+.agent/
+.helper-sandbox/
+.venv/
+dist/
+saved/
