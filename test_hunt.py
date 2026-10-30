@@ -64,6 +64,12 @@ class CommonsUrlTest(unittest.TestCase):
                          'https://thumb.wikimedia.org/wikipedia/commons/thumb/f/f0/Foo.jpg/'
                          '3000px-Foo.jpg')
 
+    def test_retile_only_final_segment(self):
+        base = 'https://upload.wikimedia.org/wikipedia/commons/thumb/a/ab/'
+        self.assertEqual(hunt.retile(base + 'Map_1000px-wide.png/120px-Map_1000px-wide.png', 640),
+                         base + 'Map_1000px-wide.png/640px-Map_1000px-wide.png')
+        self.assertEqual(hunt.retile(base + 'Foo.jpg', 640), base + 'Foo.jpg')
+
     def test_items_strips_and_retiles_tif(self):
         ii = {'url': 'https://upload.wikimedia.org/wikipedia/commons/a/ab/Foo.tif?qs=1',
               'thumburl': 'https://upload.wikimedia.org/wikipedia/commons/thumb/a/ab/Foo.tif/'
@@ -153,6 +159,15 @@ class SafeNameTest(unittest.TestCase):
 
     def test_truncate(self):
         self.assertLessEqual(len(hunt.safe_name('x' * 500)), 120)
+
+    def test_windows_safe(self):
+        r = hunt.safe_name('Title: a? "x" <y>|z*\x01.png')
+        for c in ':*?"<>|\x01':
+            self.assertNotIn(c, r)
+        self.assertTrue(r.endswith('.png'))
+        for n in ('CON', 'nul', 'com1.png', 'LPT9.jpg'):
+            self.assertNotIn(hunt.safe_name(n).split('.')[0].upper(), hunt._WIN_RESERVED)
+        self.assertEqual(hunt.safe_name('Café 東京.png'), 'Café 東京.png')
 
 
 class StaticResolveTest(unittest.TestCase):

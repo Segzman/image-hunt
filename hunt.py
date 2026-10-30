@@ -160,17 +160,29 @@ def strip_qs(url):
 def retile(thumb, px):
     if not thumb:
         return ''
-    return re.sub(r'\d+px-', f'{px}px-', thumb, count=1)
+    head, sep, last = thumb.rpartition('/')
+    return head + sep + re.sub(r'\d+px-', f'{px}px-', last, count=1)
+
+
+_WIN_RESERVED = {'CON', 'PRN', 'AUX', 'NUL'} | {
+    f'{p}{n}' for p in ('COM', 'LPT') for n in '123456789¹²³'}
 
 
 def safe_name(name):
     name = (name or '').strip()
-    name = re.sub(r'[/\\]+', '_', name)
-    name = name.replace('\x00', '').strip('. ')
+    name = re.sub(r'[/\\:*?"<>|]+', '_', name)
     name = re.sub(r'\s+', ' ', name)
+    name = re.sub(r'[\x00-\x1f\x7f]', '', name).strip('. ')
     if not name:
         name = 'image'
-    return name[:120].strip('. ') or 'image'
+    name = name[:120]
+    # Linux/macOS cap names at 255 UTF-8 bytes
+    while len(name.encode('utf-8')) > 255:
+        name = name[:-1]
+    name = name.strip('. ') or 'image'
+    if name.split('.')[0].rstrip(' ').upper() in _WIN_RESERVED:
+        name = '_' + name
+    return name
 
 
 def slugify(text, taken=()):
